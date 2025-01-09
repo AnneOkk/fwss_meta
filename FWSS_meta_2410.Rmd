@@ -1,0 +1,1861 @@
+---
+title: "R Code Meta-Analysis Future Work Self Salience"
+date: "22/05/2024"
+---
+
+
+# Read in data and preparation 
+
+```{r}
+library(tidyverse)
+library(psychmeta)
+library(readxl)
+source("custom functions/custom-functions.R")
+
+library(dplyr)
+
+db <- read_excel("../Codesheet/Codesheet_0112.xlsx", sheet = "Codesheet")
+db <- db[complete.cases(db$Sample_number), ]
+intercor <- read_excel("../Codesheet/Codesheet_0112.xlsx", sheet = "Multireg")
+colnames(db)
+colnames(intercor)
+cols.num <- c(
+  "Sample_number",
+  "Year",
+  "N",
+  "Item_number",
+  "Rxx_FWSS",
+  "Ryy_Criterion",
+  "Rxy",
+  "Prct_female",
+  "M_tenure_org",
+  "SD_tenure_org",
+  "M_age",
+  "SD_age",
+  "Individualism"
+) # deleted "Item_number" and "Ux"
+
+cols.num_intercor <- c("Sample_number", "Rxy")
+db[cols.num] <- sapply(db[cols.num], as.numeric) # make some cols numeric
+intercor[cols.num_intercor] <- sapply(intercor[cols.num_intercor], as.numeric) # make some cols numeric
+
+db <- db %>% # reverse Rxy for reverse coded constructs
+  mutate(Rxy = ifelse(.$Reverse == 'Yes', reverse(Rxy), Rxy))
+
+intercor <- intercor %>% # reverse Rxy for reverse coded constructs
+  mutate(Intercor_rxy = ifelse(.$Reverse == 'Yes', reverse(Rxy), Rxy))
+
+intercor$N <- db$N[match(intercor$Short_citation, db$Short_citation)]
+
+intercor %>% filter(Sample_number == 68) %>% select(Criterion, Predictor, Rxy)
+
+db %>% filter(Criterion == "Supports")
+```
+
+```{r}
+# Intercorrelations
+intercor_cons <- control_intercor(
+  rxyi = Rxy,
+  n = N,
+  sample_id = Sample_number,
+  construct_x = Predictor,
+  construct_y = Criterion,
+  data = intercor,
+  intercor_scalar = 0.5
+)
+```
+
+# Data overview
+
+```{r}
+db_red <- db[!duplicated(db[,'Article_PDF' ]),] 
+db_ind_samples <- db[!duplicated(db[,'Sample_number' ]),] 
+
+overall_studies <- nrow(count(db_red, Article_PDF))
+overall_k <- nrow(count(db_ind_samples, Sample_number))
+
+effect_sizes_cat1 <- db %>%                              
+  group_by(Sample_number) %>%
+  summarise(count = n_distinct(Criterion)) 
+
+effect_sizes_cat1 <- sum(effect_sizes_cat1$count)
+
+db <- db %>%
+  mutate(`Subconstruct criterion` = ifelse(is.na(`Subconstruct criterion`) | `Subconstruct criterion` == "", 
+                                         Criterion, 
+                                         `Subconstruct criterion`))
+effect_sizes_cat2 <- db %>%                              
+  group_by(Sample_number) %>%
+  summarise(count = n_distinct(`Subconstruct criterion`))
+
+effect_sizes_cat2 <- sum(effect_sizes_cat2$count)
+
+samp_size <- db_ind_samples$N %>% na.omit()
+overall_N <- sum(samp_size)
+
+apa_vec <- db_ind_samples$Long_citation %>% na.omit()
+write.csv(apa_vec,file="References/apa_vec.csv",row.names=F)
+
+cat(
+  "Our quantitative summary of the relationship between FWSS and the variables presented in the theoretical model is based on",
+  effect_sizes_cat1, "effect sizes (", effect_sizes_cat2, "effect sizes on the lower category level), derived from K =",
+  overall_studies, "studies and k =", overall_k, "independent samples, representing N =", overall_N, "individuals."
+)
+```
+
+Our quantitative summary of the relationship between FWSS and the variables presented in the theoretical model is based on `r effect_sizes_cat1` effect sizes (`r effect_sizes_cat2` effect sizes on the lower category level), derived from *K* = `r overall_studies` studies and  *k* = `r overall_k` independent samples, representing *N* = `r overall_N` individuals.
+
+```{r}
+range_low <- range(db_ind_samples$N, na.rm = T)[1]
+range_high <- range(db_ind_samples$N, na.rm = T)[2]
+mean_N <- round(mean(db_ind_samples$N, na.rm = T), 0)
+sd_N <- round(sd(db_ind_samples$N, na.rm = T), 0)
+cat(
+  "Sample sizes ranged between", range_low, "and", range_high, 
+  "(M =", mean_N, ", SD =", sd_N, ")."
+)
+```
+
+Sample sizes ranged between `r range_low` and `r range_high` (*M* = `r mean_N`, *SD* = `r sd_N`). 
+
+```{r}
+mean_age <- round(mean(db_ind_samples$M_age, na.rm = T), 2)
+
+sd_age <- round(sd(db_ind_samples$M_age, na.rm = T), 2)
+
+cat(
+  "The mean age across studies was M =", mean_age, "(SD =", sd_age, ")."
+)
+```
+
+The mean age across studies was *M* = `r mean_age` (*SD* = `r sd_age`). 
+
+```{r}
+mean_female <- round(mean(db_ind_samples$Prct_female, na.rm = T), 2)
+sd_female <- round(sd(db_ind_samples$Prct_female, na.rm = T), 2)
+
+cat("The mean percentage of female study participants across all studies was", `mean_female`, "(SD =", `sd_female`, ")")
+```
+
+The mean percentage of female study participants across all studies was `r mean_female` (*SD* = `r sd_female`)
+
+
+# Barebones and individually corrected meta-analysis
+
+## Combine moderator categories
+
+```{r}
+library(tidyverse)
+library(psychmeta)
+library(readxl)
+library(forcats)
+
+# Categorical moderators: FWSS_scale, Culture, Career_stage, Work_field, Pub_status, Adapted_scale_FWSS
+db$Scale_version <- fct_collapse(
+  db$FWSS_scale,
+  Strauss = c("Strauss et al. (2012)"),
+  Guan = c("Guan et al. (2014)")
+)
+
+db$Culture <- fct_collapse(
+  db$Country,
+  Confucian_Asia = c("China", "Taiwan"),
+  Southern_Asia = c("Thailand", "Iran", "Pakistan", "Malaysia", "Indonesia"), 
+  Germanic_Europe = c("Netherlands", "Germany"), 
+  Latin_Europe = c("Spain"), 
+  Eastern_Europe = c("Croatia"),
+  Latin_America = c("Argentina"),
+  Anglo = c("UK", "Canada", "USA", "USA, Canada", "Australia")
+)
+
+db$Career_stage <- fct_collapse(
+  db$Sample,
+  Employees = c("Employees"),
+  Students = c("Students"),
+  Mixed = c("Mixed")
+)
+
+```
+
+## Rename moderator names
+
+```{r}
+# Scale_version
+db$Scale_version <- sub("Strauss", "Original scale by Strauss et al. (2012)", db$Scale_version)
+db$Scale_version <- sub("Guan", "Chinese translation by Guan et al. (2014)", db$Scale_version)
+
+# Culture
+db$Culture <- sub("Confucian_Asia", "Confucian Asia", db$Culture)
+db$Culture <- sub("Southern_Asia", "Southern Asia", db$Culture)
+db$Culture <- sub("Germanic_Europe", "Germanic Europe", db$Culture)
+db$Culture <- sub("Latin_Europe", "Latin Europe", db$Culture)
+db$Culture <- sub("Eastern_Europe", "Eastern Europe", db$Culture)
+db$Culture <- sub("Latin_America", "Latin America", db$Culture)
+db$Culture <- sub("Anglo", "Anglosaxon countries", db$Culture)
+
+#Pub_status
+db$Pub_status <- sub("UNPUB", "Unpublished dataset", db$Pub_status)
+db$Pub_status <- sub("PUB", "Publication", db$Pub_status)
+db$Pub_status <- sub("THESIS", "Thesis", db$Pub_status)
+db$Pub_status <- sub("CONF", "Conference proceeding", db$Pub_status)
+db$Pub_status <- sub("PRE", "Preprint", db$Pub_status)
+
+
+db$Pub_status_binary <- fct_collapse(
+  db$Pub_status,
+  Published = c("Publication"),
+  Unpublished = c("Unpublished dataset", "Thesis", "Conference proceeding", "Preprint")
+)
+```
+
+## Create databases
+
+```{r}
+db_Age <- db %>% filter(., Predictor == 'FWSS', Criterion == 'Age', complete.cases(Rxy))
+
+db_Barriers <- db %>% filter(.,
+                             Predictor == 'FWSS',
+                             Criterion == 'Barriers',
+                             complete.cases(Rxy))
+
+db_CA <- db %>% filter(.,
+                       Predictor == 'FWSS',
+                       Criterion == 'Career adaptability',
+                       complete.cases(Rxy))
+
+
+db_CDSE <- db %>% filter(
+  .,
+  Predictor == 'FWSS',
+  Criterion == 'Career decision self-efficacy',
+  complete.cases(Rxy)
+)
+
+db_Edu <-  db %>% filter(.,
+                         Predictor == 'FWSS',
+                         Criterion == 'Education',
+                         complete.cases(Rxy))
+
+db_Employability <- db %>% filter(.,
+                                  Predictor == 'FWSS',
+                                  Criterion == 'Employability',
+                                  complete.cases(Rxy))
+
+db_Gender <- db %>% filter(.,
+                           Predictor == 'FWSS',
+                           Criterion == 'Gender',
+                           complete.cases(Rxy))
+
+db_Meaning <- db %>% filter(.,
+                            Predictor == 'FWSS',
+                            Criterion == 'Meaning in life',
+                            complete.cases(Rxy))
+
+db_OCCWellbeing <- db %>% filter(.,
+                            Predictor == 'FWSS',
+                            Criterion == 'Occupational well-being',
+                            complete.cases(Rxy))
+
+db_OccupationalSE <- db %>% filter(.,
+                                   Predictor == 'FWSS',
+                                   Criterion == 'Occupational self-efficacy',
+                                   complete.cases(Rxy))
+
+db_Performance <- db %>% filter(.,
+                                Predictor == 'FWSS',
+                                Criterion == 'Job performance',
+                                complete.cases(Rxy))
+
+
+db_PCB <- db %>% filter(.,
+                        Predictor == 'FWSS',
+                        Criterion == 'Proactive career behavior',
+                        complete.cases(Rxy))
+db_PP <- db %>% filter(.,
+                       Predictor == 'FWSS',
+                       Criterion == 'Proactive personality',
+                       complete.cases(Rxy))
+
+db_PWB <- db %>% filter(.,
+                        Predictor == 'FWSS',
+                        Criterion == 'Proactive work behavior',
+                        complete.cases(Rxy))
+
+db_PsyCap <- db %>% filter(.,
+                           Predictor == 'FWSS',
+                           Criterion == 'Psychological capital (PsyCap)',
+                           complete.cases(Rxy))
+
+db_Supports <- db %>% filter(.,
+                             Predictor == 'FWSS',
+                             Criterion == 'Supports',
+                             complete.cases(Rxy))
+
+db_SelfEsteem <- db %>% filter(.,
+                             Predictor == 'FWSS',
+                             Criterion == 'Self-esteem',
+                             complete.cases(Rxy))
+
+db_Tenure <- db %>% filter(.,
+                           Predictor == 'FWSS',
+                           Criterion == 'Tenure',
+                           complete.cases(Rxy))
+
+
+db_TurnoverI <- db %>% filter(.,
+                              Predictor == 'FWSS',
+                              Criterion == 'Turnover intention',
+                              complete.cases(Rxy))
+
+
+db_Wellbeing <- db %>% filter(.,
+                              Predictor == 'FWSS',
+                              Criterion == 'Life satisfaction and well-being',
+                              complete.cases(Rxy))
+db_WorkE <- db %>% filter(.,
+                          Predictor == 'FWSS',
+                          Criterion == 'Work engagement',
+                          complete.cases(Rxy))
+
+
+databases <- list(db_SelfEsteem, db_PP, db_PsyCap, 
+                  db_CA, db_PCB, db_PWB, db_CDSE, db_OccupationalSE,
+                  db_Employability, db_Performance, 
+                  db_OCCWellbeing, db_Wellbeing, db_Meaning, 
+                  db_WorkE, db_TurnoverI, 
+                  db_Age, db_Gender, db_Edu, db_Tenure,
+                  db_Supports, db_Barriers
+                  )
+```
+
+## Calculate meta-analyses with subconstruct criteria
+
+```{r}
+### CALCULATE BAREBONES ###
+# Antecedents
+Selfesteem <- cat_mods(data = db_SelfEsteem, 
+                       moderator = "Subconstruct criterion",
+                       moderators_name = "Subconstruct criterion",
+                       cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+PP <- cat_mods(data = db_PP, 
+               moderator = "Subconstruct criterion",
+               moderators_name = "Subconstruct criterion",
+               cat_mod = T)  %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+Psycap <- cat_mods(data = db_PsyCap, 
+                   moderator = "Subconstruct criterion",
+                   moderators_name = "Subconstruct criterion",
+                   cat_mod = T)  %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+# Contextual supports and barriers
+Supports <- cat_mods(data = db_Supports, 
+                     moderator = "Subconstruct criterion",
+                     moderators_name = "Subconstruct criterion",
+                     cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+Barriers <- cat_mods(data = db_Barriers, 
+                     moderator = "Subconstruct criterion",
+                     moderators_name = "Subconstruct criterion",
+                     cat_mod = T) 
+
+# Career adaptability
+CA <- cat_mods(data = db_CA, 
+               moderator = "Subconstruct criterion",
+               moderators_name = "Subconstruct criterion",
+               cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+# Adapting responses
+PCB <- cat_mods(data = db_PCB, 
+                moderator = "Subconstruct criterion",
+                moderators_name = "Subconstruct criterion",
+                cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+PWB <- cat_mods(data = db_PWB, 
+                moderator = "Subconstruct criterion",
+                moderators_name = "Subconstruct criterion",
+                cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+CDSE <- cat_mods(data = db_CDSE, 
+                 moderator = "Subconstruct criterion",
+                 moderators_name = "Subconstruct criterion",
+                 cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+OccupationalSE <- cat_mods(data = db_OccupationalSE, 
+                           moderator = "Subconstruct criterion",
+                           moderators_name = "Subconstruct criterion",
+                           cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+# Adaptation outcomes
+Employability <- cat_mods(data = db_Employability, 
+                          moderator = "Subconstruct criterion",
+                          moderators_name = "Subconstruct criterion",
+                          cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+Performance <- cat_mods(data = db_Performance, 
+                        moderator = "Subconstruct criterion",
+                        moderators_name = "Subconstruct criterion",
+                        cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+OCCWellbeing <- cat_mods(data = db_OCCWellbeing, 
+                         moderator = "Subconstruct criterion",
+                         moderators_name = "Subconstruct criterion",
+                         cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+
+Wellbeing <- cat_mods(data = db_Wellbeing, 
+                      moderator = "Subconstruct criterion",
+                      moderators_name = "Subconstruct criterion",
+                      cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+Meaning <- cat_mods(data = db_Meaning, 
+                    moderator = "Subconstruct criterion",
+                    moderators_name = "Subconstruct criterion",
+                    cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+WE <- cat_mods(data = db_WorkE, 
+               moderator = "Subconstruct criterion",
+               moderators_name = "Subconstruct criterion",
+               cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+TurnoverI <- cat_mods(data = db_TurnoverI, 
+                      moderator = "Subconstruct criterion",
+                      moderators_name = "Subconstruct criterion",
+                      cat_mod = T)  %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+
+# Demographic covariates of FWSS
+Age <- cat_mods(data = db_Age, 
+                moderator = "Subconstruct criterion",
+                moderators_name = "Subconstruct criterion",
+                cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+Gender <- cat_mods(data = db_Gender, 
+                   moderator = "Subconstruct criterion",
+                   moderators_name = "Subconstruct criterion",
+                   cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+Education <- cat_mods(data = db_Edu, 
+                      moderator = "Subconstruct criterion",
+                      moderators_name = "Subconstruct criterion",
+                      cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+Tenure <- cat_mods(data = db_Tenure, 
+                   moderator = "Subconstruct criterion",
+                   moderators_name = "Subconstruct criterion",
+                   cat_mod = T) %>% 
+  remove_same_name_rows(., "construct_y", "Subconstruct criterion")
+
+```
+
+
+## Formatting 
+
+```{r}
+library(dplyr)
+## Make table
+out_table_bivariate <- rbind(
+  Selfesteem,
+  PP,
+  Psycap,
+  CA,
+  PCB,
+  PWB,
+  CDSE,
+  OccupationalSE,
+  Employability,
+  Performance,
+  OCCWellbeing,
+  Wellbeing,
+  Meaning,
+  WE,
+  TurnoverI,
+  Age, 
+  Gender,
+  Education,
+  Tenure,
+  Supports,
+  Barriers
+) %>% filter(k > 2)
+out_table_bivariate$CI_LL_95[out_table_bivariate$CI_LL_95 < -1] <- -1.00
+out_table_bivariate$CR_LL_80[out_table_bivariate$CR_LL_80 < -1] <- -1.00
+out_table_bivariate$CI_UL_95[out_table_bivariate$CI_UL_95 > 1] <- 1.00
+out_table_bivariate$CR_UL_80[out_table_bivariate$CR_UL_80 > 1] <- 1.00
+
+# Format numeric columns
+cols_comma <- c("N", "k")
+cols_three_digits <- c("CI_LL_95", "CI_UL_95", "CR_LL_80", "CR_UL_80", "mean_r", "mean_rho", "sd_r_c", "var_arti")
+
+out_table_bivariate <- out_table_bivariate %>% 
+  mutate(across(all_of(cols_comma), format_column, digits = 0, add_comma = TRUE, trim_leading_zero = FALSE)) %>%
+  mutate(across(all_of(cols_three_digits), format_column, digits = 3))
+
+# Create combined columns
+out_table_bivariate <- out_table_bivariate %>%
+  mutate(
+    CI95 = paste(CI_LL_95, CI_UL_95, sep = ", "),
+    CR80 = paste(CR_LL_80, CR_UL_80, sep = ", ")
+  )
+
+out_table_bivariate <- out_table_bivariate %>% select(construct_y, `Subconstruct criterion`, k, N, mean_r, mean_rho, sd_r_c, CI95, CR80, var_arti) %>% as.data.frame(.)
+
+colnames(out_table_bivariate) <- c(
+  "Criterion",
+  "Component criterion",
+  "k",
+  "N",
+  "r",
+  "r_c",
+  "SD_c",
+  "95% CI",
+  "80% CR",
+  "cor(r, a) "
+)
+
+
+library(flextable)
+library(officer)
+flex_tbl <- flextable(out_table_bivariate)
+
+# Export to Word
+doc <- read_docx() %>%
+  body_add_flextable(value = flex_tbl)
+
+# Save the Word document
+print(doc, target = "tables/out_table_bivariate_predictors.docx")
+
+
+```
+
+
+# Relative weights analysis
+
+## Preparation
+
+```{r}
+library(readxl)
+library(tidyverse)
+library(psychmeta)
+library(xtable)
+
+db_med <- read_excel("../Codesheet/Codesheet_0112.xlsx", sheet = "Mediations")
+
+
+df_CA_PCB <- db_med[(db_med$Outcome == 'Career adaptability')  &
+                      (db_med$Mediator ==  'Proactive career behavior') |
+                      (db_med$Mediator == 'Career adaptability')  &
+                      (db_med$Outcome ==  'Proactive career behavior'), ] %>% rename(Cor_CA_PCB = Rxy) %>% 
+  mutate(Rxx_Mediator = as.numeric(Rxx_Mediator)) %>% 
+  mutate(Rxx_Outcome = as.numeric(Rxx_Outcome))
+
+df_FWSS_PCB <- db[(db$Criterion == 'Proactive career behavior')  &
+                    (db$Predictor ==  'FWSS'), ] %>% rename(Cor_FWSS_PCB = Rxy) %>% drop_na(Cor_FWSS_PCB)
+
+df_FWSS_CA <- db[(db$Criterion == 'Career adaptability')  &
+                   (db$Predictor ==  'FWSS'), ] %>% rename(Cor_FWSS_CA = Rxy) %>% drop_na(Cor_FWSS_CA)
+
+df_CA_PP <- db_med[(db_med$Outcome == 'Career adaptability')  &
+                      (db_med$Mediator ==  'Proactive personality') |
+                      (db_med$Mediator == 'Career adaptability')  &
+                      (db_med$Outcome ==  'Proactive personality'), ] %>% rename(Cor_CA_PP = Rxy) %>% 
+  mutate(Rxx_Mediator = as.numeric(Rxx_Mediator)) %>% 
+  mutate(Rxx_Outcome = as.numeric(Rxx_Outcome))
+
+df_PCB_PP <- db_med[(db_med$Outcome == 'Proactive career behavior')  &
+                      (db_med$Mediator ==  'Proactive personality') |
+                      (db_med$Mediator == 'Proactive career behavior')  &
+                      (db_med$Outcome ==  'Proactive personality'), ] %>% rename(Cor_PCB_PP = Rxy) %>% 
+  mutate(Rxx_Mediator = as.numeric(Rxx_Mediator)) %>% 
+  mutate(Rxx_Outcome = as.numeric(Rxx_Outcome))
+
+df_FWSS_PP <- db[(db$Criterion == 'Proactive personality')  &
+                   (db$Predictor ==  'FWSS'), ] %>% rename(Cor_FWSS_PP = Rxy) %>% drop_na(Cor_FWSS_PP)
+```
+
+```{r}
+# Composite relationships
+
+# Predictor: FWSS. (FWSS)
+# Mediator: Career adaptability (CA)
+# Outcome: Proactive career beahvior (PCB)
+
+# FWSS_CA
+FWSS_CA <- ma_r(
+  ma_method = "ic",
+  rxyi = Cor_FWSS_CA,
+  n = N,
+  rxx = Rxx_FWSS,
+  ryy = Ryy_Criterion,
+  construct_x = "Predictor",
+  construct_y = "Criterion",
+  sample_id = "Sample_number",
+  collapse_method = "composite",
+  intercor = intercor_cons,
+  wt_type = "sample_size",
+  correct_rxx = TRUE,
+  correct_ryy = TRUE,
+  impute_artifacts = TRUE,
+  data = df_FWSS_CA
+) %>%
+  get_escalc(.) # info: the escalc column contains the data from each meta-analysis
+
+Cor_FWSS_CA <- FWSS_CA$`analysis_id: 1`$barebones %>% select(yi, sample_id) %>% rename(Sample_number = sample_id)
+Cor_FWSS_CA$Sample_number <- as.numeric(as.character(Cor_FWSS_CA$Sample_number))
+df_FWSS_CA <- df_FWSS_CA %>% select(Article_PDF, Sample_number, N)
+df_FWSS_CA <- unique(left_join(df_FWSS_CA, Cor_FWSS_CA, by = "Sample_number")) %>% rename(FWSS_CA = yi)
+
+# CA_PCB
+CA_PCB <- ma_r(
+  ma_method = "ic",
+  rxyi = Cor_CA_PCB,
+  n = N,
+  rxx = Rxx_Mediator,
+  ryy = Rxx_Outcome,
+  construct_x = "Criterion_clean",
+  construct_y = "Predictor_clean",
+  sample_id = "Sample_number",
+  collapse_method = "composite",
+  intercor = intercor_cons,
+  wt_type = "sample_size",
+  correct_rxx = TRUE,
+  correct_ryy = TRUE,
+  impute_artifacts = TRUE,
+  data = df_CA_PCB
+) %>% get_escalc(.)
+Cor_CA_PCB <- CA_PCB$`analysis_id: 1`$barebones %>% select(yi, sample_id) %>% rename(Sample_number = sample_id)
+Cor_CA_PCB$Sample_number <- as.numeric(as.character(Cor_CA_PCB$Sample_number))
+df_CA_PCB <- df_CA_PCB %>% select(Article_PDF, Sample_number, N)
+df_CA_PCB <- unique(left_join(df_CA_PCB, Cor_CA_PCB, by = "Sample_number")) %>% rename(CA_PCB = yi)
+
+# FWSS_PCB
+FWSS_PCB <- ma_r(
+  ma_method = "ic",
+  rxyi = Cor_FWSS_PCB,
+  n = N,
+  rxx = Rxx_FWSS,
+  ryy = Ryy_Criterion,
+  construct_x = "Predictor",
+  construct_y = "Criterion",
+  sample_id = "Sample_number",
+  collapse_method = "composite",
+  intercor = intercor_cons,
+  wt_type = "sample_size",
+  correct_rxx = TRUE,
+  correct_ryy = TRUE,
+  impute_artifacts = TRUE,
+  data = df_FWSS_PCB
+) %>% get_escalc(.)
+Cor_FWSS_PCB <- FWSS_PCB$`analysis_id: 1`$barebones %>% select(yi, sample_id) %>% rename(Sample_number = sample_id)
+Cor_FWSS_PCB$Sample_number <- as.numeric(as.character(Cor_FWSS_PCB$Sample_number))
+
+df_FWSS_PCB <- df_FWSS_PCB %>% select(Article_PDF, Sample_number, N)
+df_FWSS_PCB <- unique(left_join(df_FWSS_PCB, Cor_FWSS_PCB, by = "Sample_number")) %>% rename(FWSS_PCB = yi)
+
+
+# CA_PP
+CA_PP <- ma_r(
+  ma_method = "ic",
+  rxyi = Cor_CA_PP,
+  n = N,
+  rxx = Rxx_Mediator,
+  ryy = Rxx_Outcome,
+  construct_x = "Criterion_clean",
+  construct_y = "Predictor_clean",
+  sample_id = "Sample_number",
+  collapse_method = "composite",
+  intercor = intercor_cons,
+  wt_type = "sample_size",
+  correct_rxx = TRUE,
+  correct_ryy = TRUE,
+  impute_artifacts = TRUE,
+  data = df_CA_PP
+) %>% get_escalc(.)
+Cor_CA_PP <- CA_PP$`analysis_id: 1`$barebones %>% select(yi, sample_id) %>% rename(Sample_number = sample_id)
+Cor_CA_PP$Sample_number <- as.numeric(as.character(Cor_CA_PP$Sample_number))
+df_CA_PP <- df_CA_PP %>% select(Article_PDF, Sample_number, N)
+df_CA_PP <- unique(left_join(df_CA_PP, Cor_CA_PP, by = "Sample_number")) %>% rename(CA_PP = yi)
+
+
+# PCB_PP
+PCB_PP <- ma_r(
+  ma_method = "ic",
+  rxyi = Cor_PCB_PP,
+  n = N,
+  rxx = Rxx_Mediator,
+  ryy = Rxx_Outcome,
+  construct_x = "Criterion_clean",
+  construct_y = "Predictor_clean",
+  sample_id = "Sample_number",
+  collapse_method = "composite",
+  intercor = intercor_cons,
+  wt_type = "sample_size",
+  correct_rxx = TRUE,
+  correct_ryy = TRUE,
+  impute_artifacts = TRUE,
+  data = df_PCB_PP
+) %>% get_escalc(.)
+Cor_PCB_PP <- PCB_PP$`analysis_id: 1`$barebones %>% select(yi, sample_id) %>% rename(Sample_number = sample_id)
+Cor_PCB_PP$Sample_number <- as.numeric(as.character(Cor_PCB_PP$Sample_number))
+df_PCB_PP <- df_PCB_PP %>% select(Article_PDF, Sample_number, N)
+df_PCB_PP <- unique(left_join(df_PCB_PP, Cor_PCB_PP, by = "Sample_number")) %>% rename(PCB_PP = yi)
+
+
+# FWSS_PP
+FWSS_PP <- ma_r(
+  ma_method = "ic",
+  rxyi = Cor_FWSS_PP,
+  n = N,
+  rxx = Rxx_FWSS,
+  ryy = Ryy_Criterion,
+  construct_x = "Predictor",
+  construct_y = "Criterion",
+  sample_id = "Sample_number",
+  collapse_method = "composite",
+  intercor = intercor_cons,
+  wt_type = "sample_size",
+  correct_rxx = TRUE,
+  correct_ryy = TRUE,
+  impute_artifacts = TRUE,
+  data = df_FWSS_PP
+) %>% get_escalc(.)
+Cor_FWSS_PP <- FWSS_PP$`analysis_id: 1`$barebones %>% select(yi, sample_id) %>% rename(Sample_number = sample_id)
+Cor_FWSS_PP$Sample_number <- as.numeric(as.character(Cor_FWSS_PP$Sample_number))
+
+df_FWSS_PP <- df_FWSS_PP %>% select(Article_PDF, Sample_number, N)
+df_FWSS_PP <- unique(left_join(df_FWSS_PP, Cor_FWSS_PP, by = "Sample_number")) %>% rename(FWSS_PP = yi)
+
+#### Merge data to create one overall database with relationships between Predictor, Mediator, Outcome ####
+db_med <- full_join(df_FWSS_PP,
+                    df_FWSS_CA,
+                    by = c("Article_PDF", "Sample_number", "N"))
+db_med <- full_join(db_med,
+                    df_FWSS_PCB,
+                    by = c("Article_PDF", "Sample_number", "N"))
+db_med <- full_join(db_med,
+                    df_CA_PP,
+                    by = c("Article_PDF", "Sample_number", "N"))
+db_med <- full_join(db_med,
+                    df_PCB_PP,
+                    by = c("Article_PDF", "Sample_number", "N"))
+db_med <- full_join(db_med,
+                    df_CA_PCB,
+                    by = c("Article_PDF", "Sample_number", "N"))
+
+
+db_news <- full_join(df_CA_PCB,
+                    df_CA_PP,
+                    by = c("Article_PDF", "Sample_number", "N"))
+db_news <- full_join(db_news,
+                    df_PCB_PP,
+                    by = c("Article_PDF", "Sample_number", "N"))
+```
+
+## Create correlation matrix 
+
+```{r}
+library(metaSEM)
+db_mediation <- db_med[!with(db_med, is.na(FWSS_CA) &
+                               is.na(FWSS_PCB) & is.na(CA_PCB) & is.na(FWSS_PP) & is.na(CA_PP) & is.na(PCB_PP)), ]
+varnames <- c("FWSS", "PP", "CA", "PCB")
+labels <- list(varnames, varnames)
+cordat1 <- list()
+for (i in 1:nrow(db_mediation)) {
+  cordat1[[i]] <- vec2symMat(as.matrix(db_mediation[i, c(4:9)]), diag = FALSE)
+  dimnames(cordat1[[i]]) <- labels
+}
+```
+
+### Put NA on diagonal for variable with least present correlations
+
+```{r}
+nvar <- 4
+for (i in 1:length(cordat1)) {
+  for (j in 1:nrow(cordat1[[i]])) {
+    for (k in 1:nvar) {
+      if (is.na(cordat1[[i]][j, k] == TRUE)
+          & is.na(cordat1[[i]][j, j]) != TRUE
+          & is.na(cordat1[[i]][k, k]) != TRUE) {
+        if (sum(is.na(cordat1[[i]])[j, ]) > sum(is.na(cordat1[[i]])[k, ]))
+        {
+          cordat1[[i]][k, k] <- NA
+        }
+        if (sum(is.na(cordat1[[i]])[j, ]) <= sum(is.na(cordat1[[i]])[k, ]))
+        {
+          cordat1[[i]][j, j] <- NA
+        }
+      }
+    }
+  }
+}
+```
+
+### Random effects analysis
+
+```{r}
+stage1random <- tssem1(
+  Cov = cordat1,
+  n = db_mediation$N,
+  method = "REM",
+  RE.type = "Diag"
+)
+summary(stage1random)
+
+str(summary(stage1random))
+
+result <- summary(stage1random)
+
+result$coefficients %>% select(Estimate, Std.Error, `Pr(>|z|)`) 
+result$I2.values %>% data.frame(.) %>% select(Estimate)
+
+```
+
+## Extract and arrange the variance component of the model
+```{r}
+uni1 <- uniR1(cordat1, db_med$N)
+n_harmonic <- uni1$n.harmonic
+
+stage1random <- tssem1(Cov = cordat1, n = db_med$N, method = "REM", RE.type = "Diag")
+stage1random <- (rerun(stage1random))
+summary(stage1random)
+
+my.cov <- vec2symMat(coef(stage1random, select="fixed"), diag = FALSE)
+dimnames(my.cov) <- list(c("FWSS", "PP", "CA", "PCB"),
+                         c("FWSS", "PP", "CA", "PCB"))
+
+# create correlation matrix
+my.cov_out <- round(my.cov,3)
+upper<-my.cov_out
+upper[upper.tri(my.cov_out)]<-""
+upper<-as.data.frame(upper)
+upper
+
+upper <- tibble::rownames_to_column(upper, "Variable")
+
+
+flex_tbl <- flextable(upper)
+
+# Export to Word
+doc <- read_docx() %>%
+  body_add_flextable(value = flex_tbl)
+
+# Save the Word document
+print(doc, target = "tables/corr_matrix.docx")
+
+```
+
+```{r}
+# RWAs
+library(psych)
+library(psychmeta)
+thedata<-data.frame(my.cov)
+
+multRegress(thedata)
+RW.Results<-result
+
+RSQ.Results<-rsquare
+
+#R-squared For the Model
+RSQ.Results
+
+# Multiple regression with harmonic mean
+HM = as.numeric(n_harmonic)
+
+MyMatrix = data.matrix(my.cov)
+
+MR_model = set.cor(x=c(1:3),y=c(4), n.obs = HM, data= MyMatrix)
+
+MR_model_table = as.data.frame(MR_model$coefficients)
+MR_model_table$se = MR_model$se
+MR_model_table$t = MR_model$t
+MR_model_table$P = MR_model$Probability
+
+MR_model_table = data.matrix(MR_model_table)
+colnames(MR_model_table) <- c("B","SEB","t-value","p")
+
+MR_model$R2
+MR_model_table
+RW.Results
+
+#Nicely Combined Output
+cbind(MR_model_table, RW.Results[,-1]) %>% round(3)
+
+# Incremental models
+MR_model_0 = set.cor(x=c(2:3),y=4, n.obs = HM, data= MyMatrix)
+MR_model_0 
+MR_model_0$R2
+
+MR_model_FWSS = set.cor(x=c(1:3),y=4, n.obs = HM, data= MyMatrix)
+MR_model_FWSS 
+MR_model_FWSS$R2
+
+
+DELTA_R2 = MR_model_FWSS$R2-MR_model_0$R2
+DELTA_R2
+
+M0DF2 = MR_model_0$df[2]
+M1DF2 = MR_model_FWSS$df[2]
+
+
+FPARTIAL = (DELTA_R2/(M0DF2-M1DF2))/((1-MR_model_0$R2)/(M0DF2))
+FPARTIAL
+
+DF0 = M0DF2-M1DF2
+DF1 = M1DF2
+
+FCRIT = qf(.95, df1=DF0, df2=DF1)
+
+PVAL = round(pf(FPARTIAL, DF0, DF1, lower.tail=F))
+
+INCREMENTALOUT = cbind(MR_model_0$R2,
+                       MR_model_FWSS$R2,
+                       DELTA_R2,
+                       FPARTIAL,
+                       PVAL)
+
+
+colnames(INCREMENTALOUT) = c("M1R2", "M2R2", "DELTAR2", "FPARTIAL", "PVAL")
+INCREMENTALOUT
+
+
+# Model_all <- paste0("F = ", MR_model_1$F, " p < .001, ", "R2 = ", round(MR_model_1$R2, 3))
+
+MR_model_table_out <- data.frame(MR_model_table)
+MR_model_table_out$B <- round(MR_model_table_out$B, 3) %>% gsub("0\\.", "\\.", .)
+MR_model_table_out$SEB <- round(MR_model_table_out$SEB, 3) %>% gsub("0\\.", "\\.", .)
+MR_model_table_out$t.value <- round(MR_model_table_out$t.value, 3) %>% gsub("0\\.", "\\.", .)
+MR_model_table_out$p <- pvalr(MR_model_table_out$p)
+
+
+RW.Results_out <- data.frame(RW.Results)
+RW.Results_out$Raw.RelWeight <- round(RW.Results_out$Raw.RelWeight, 3) %>% as.character(.) 
+RW.Results_out$Rescaled.RelWeight <- paste0(round(RW.Results_out$Rescaled.RelWeight, 3), "%")
+
+incremental_out <- data.frame(rbind(INCREMENTALOUT)) 
+incremental_out$M1R2 <- as.numeric(as.character(incremental_out$M1R2)) %>% round(., 3) %>% gsub("0\\.", "\\.", .)
+incremental_out$M2R2 <- as.numeric(as.character(incremental_out$M2R2)) %>% round(., 3)  %>% gsub("0\\.", "\\.", .)
+incremental_out$DELTAR2 <- as.numeric(as.character(incremental_out$DELTAR2)) %>% round(., 3) %>% gsub("0\\.", "\\.", .)
+incremental_out$FPARTIAL <- as.numeric(as.character(incremental_out$FPARTIAL)) %>% round(., 3) 
+incremental_out$PVAL <- as.numeric(as.character(incremental_out$PVAL)) %>% pvalr(.)
+
+incremental_out$M1R2 <- round(MR_model_FWSS$R2, 3)
+incremental_out <- data.frame(rbind(c(
+  c("", "", "", "", ""),
+  paste0(round(MR_model_0$R2,3)), "", "", "", ""), 
+  incremental_out)) 
+
+out_multireg <- cbind(MR_model_table_out, RW.Results_out) %>% select(-Variables)
+colnames(out_multireg) <- c("B", "SE_B", "t", "p", "Raw RW", "RS RW")
+
+out_multireg <- out_multireg[c(2, 3, 1),]
+
+paste0("Dependent variable: Proactive career behavior, F = ",round(MR_model$F,3), " (p < .001), R2 = ", round(MR_model$R2, 3), ", F_partial = ", round(FPARTIAL, 3), " (p < .001)", ", ΔR2 = ", round(DELTA_R2, 3))
+
+```
+
+```{r}
+library(tibble)
+out_multireg <- tibble::rownames_to_column(out_multireg, "Predictor")
+
+flex_tbl <- flextable(out_multireg)
+
+# Export to Word
+doc <- read_docx() %>%
+  body_add_flextable(value = flex_tbl)
+
+# Save the Word document
+print(doc, target = "tables/out_multireg.docx")
+```
+
+# Mediation model: TSSEM with composite correlations
+
+### Create mxMatrices - only indirect effects
+
+```{r}
+# Matrices specified column by row!
+model2 <- "## PCB is modeled by PP and FWSS and CA
+           PCB ~ FWSS + PP + Med2DV*CA
+           ## CA is modeled by FWSS
+           CA ~ IV2Med*FWSS
+           ## Variances of predictors are fixed at 1
+           FWSS ~~ 1*FWSS
+           PP ~~ 1*PP
+           ## Correlation between the predictors
+           FWSS ~~ FWSSCorPP*PP
+           CA ~~ CACorPP*PP
+           ## Error variance
+           PCB ~~ ErrorVarPCB*PCB"
+plot(model2)
+
+RAM2 <- lavaan2RAM(model2)
+
+#### Fitting the model
+
+stage2 <- tssem2(stage1random, RAM=RAM2, intervals="LB",
+                 diag.constraints = TRUE,
+                 mx.algebras = list(Indirect = mxAlgebra(IV2Med * Med2DV, name =
+                                        "Indirect")))
+stage2 <- rerun(stage2)
+summary(stage2)
+
+
+fit_indirect <- summary(stage2)$stat %>% round(., 3)
+coefs_indirect <- summary((stage2))$coefficients %>% round(., 3)
+indirect <- summary((stage2))$mx.algebras  %>% round(., 3)
+```
+
+#### Plot
+
+```{r}
+library(semPlot)
+my.plot <- meta2semPlot(stage2)
+my.plot
+semPaths(my.plot, whatLabels = "est", layout = "tree2")
+```
+
+## make table
+
+```{r}
+# get indirect effects
+ind_effects <- data.frame(coefs_indirect) %>% select("Estimate", "lbound", "ubound")
+ind_effects <- rbind(ind_effects, indirect)
+
+names(ind_effects) <- c("Estimate", "Lower bound", "Upper bound")
+
+rownames(ind_effects)
+ind_effects <- ind_effects[c("IV2Med", "Med2DV", "PCBONFWSS", "PCBONPP", "Indirect[1,1]"), ]
+
+
+Paths <- c(
+  "FWSS rightarrow CA",
+  "CA rightarrow PCB",
+  "FWSS rightarrow PCB",
+  "PP rightarrow PCB",
+  "FWSS rightarrow CA rightarrow PCB"
+)
+
+ind_effects$Estimate <- formatC(
+  ind_effects$Estimate,
+  format = "f",
+  zero.print = T,
+  digits = 2
+)
+ind_effects$`Lower bound` <- formatC(
+  ind_effects$`Lower bound`,
+  format = "f",
+  zero.print = T,
+  digits = 2
+)
+ind_effects$`Upper bound` <- formatC(
+  ind_effects$`Upper bound`,
+  format = "f",
+  zero.print = T,
+  digits = 2
+)
+
+ind_effects$CI95 <- paste(ind_effects$`Lower bound`, ", ", ind_effects$`Upper bound`, sep =
+                            "")
+
+ind_effects <- ind_effects %>% select(-matches("bound"))
+
+ind_effects <- cbind(Paths, ind_effects)
+
+flex_tbl <- flextable(ind_effects)
+
+# Export to Word
+doc <- read_docx() %>%
+  body_add_flextable(value = flex_tbl)
+
+# Save the Word document
+print(doc, target = "tables/mediation.docx")
+
+```
+
+# Moderator analyses
+
+### Continuous moderators
+
+```{r}
+# Define the moderators
+moderators_cont <- c("M_age", "M_tenure_org", "Prct_female", "Year")
+
+# Only > 10 effect sizes
+moderator_dbs <- list(db_PP,
+                      db_CA,
+                      db_PCB,
+                      db_PWB,
+                      db_Supports, 
+                      db_Barriers
+                      )  
+
+```
+
+#### Moderation by age (M_age)
+
+```{r}
+Age_PP <- mod_cont_metafor(db_PP, get_escalc, plain_meta, "M_age")
+Age_PP_output <- get_metafor_output(Age_PP)
+
+Age_Supports <- mod_cont_metafor(db_Supports, get_escalc, plain_meta, "M_age")
+Age_Supports_output <- get_metafor_output(Age_Supports)
+
+Age_Barriers <- mod_cont_metafor(db_Barriers, get_escalc, plain_meta, "M_age")
+Age_Barriers_output <- get_metafor_output(Age_Barriers)
+
+Age_CA <- mod_cont_metafor(db_CA, get_escalc, plain_meta, "M_age")
+Age_CA_output <- get_metafor_output(Age_CA)
+
+Age_PCB <- mod_cont_metafor(db_PCB, get_escalc, plain_meta, "M_age")
+Age_PCB_output <- get_metafor_output(Age_PCB)
+
+Age_PWB <- mod_cont_metafor(db_PWB, get_escalc, plain_meta, "M_age")
+Age_PWB_output <- get_metafor_output(Age_PWB)
+
+
+Age_mod_output <- rbind(
+  Age_PP_output,
+  Age_CA_output,
+  Age_PCB_output,
+  Age_PWB_output,
+  Age_Supports_output,
+  Age_Barriers_output
+)
+
+# Removed: OccupationalSE, SelfEsteem, TurnoverI ("Not enough data to perform moderation analysis.")
+```
+
+##### Bubble plot 
+
+```{r}
+#| eval: false 
+create_bubble_plot_age(Age_Supports, moderator_range = 15:60, xlim = c(15,60), output_filename = "Age_Supports", yaxis_label = "FWSS-Supports", xaxis_label = "Sample mean age")
+
+```
+
+#### Moderation by Tenure (M_tenure_org)
+
+```{r}
+Tenure_Supports <- mod_cont_metafor(db_Supports, get_escalc, plain_meta, "M_tenure_org")
+Tenure_Supports_output <- get_metafor_output(Tenure_Supports)
+
+Tenure_PCB <- mod_cont_metafor(db_PCB, get_escalc, plain_meta, "M_tenure_org")
+Tenure_PCB_output <- get_metafor_output(Tenure_PCB)
+
+Tenure_PWB <- mod_cont_metafor(db_PWB, get_escalc, plain_meta, "M_tenure_org")
+Tenure_PWB_output <- get_metafor_output(Tenure_PWB)
+
+Tenure_mod_output <- rbind(
+  Tenure_PCB_output,
+  Tenure_PWB_output,
+  Tenure_Supports_output
+
+)
+```
+#### Moderation by Gender (Prct_female)
+```{r}
+PRCTF_PP <- mod_cont_metafor(db_PP, get_escalc, plain_meta, "Prct_female")
+PRCTF_PP_output <- get_metafor_output(PRCTF_PP)
+
+PRCTF_Supports <- mod_cont_metafor(db_Supports, get_escalc, plain_meta, "Prct_female")
+PRCTF_Supports_output <- get_metafor_output(PRCTF_Supports)
+
+PRCTF_Barriers <- mod_cont_metafor(db_Barriers, get_escalc, plain_meta, "Prct_female")
+PRCTF_Barriers_output <- get_metafor_output(PRCTF_Barriers)
+
+PRCTF_CA <- mod_cont_metafor(db_CA, get_escalc, plain_meta, "Prct_female")
+PRCTF_CA_output <- get_metafor_output(PRCTF_CA)
+
+PRCTF_PCB <- mod_cont_metafor(db_PCB, get_escalc, plain_meta, "Prct_female")
+PRCTF_PCB_output <- get_metafor_output(PRCTF_PCB)
+
+PRCTF_PWB <- mod_cont_metafor(db_PWB, get_escalc, plain_meta, "Prct_female")
+PRCTF_PWB_output <- get_metafor_output(PRCTF_PWB)
+
+PRCT_Fem_mod_output <- rbind(
+  PRCTF_PP_output,
+  PRCTF_CA_output,
+  PRCTF_PCB_output,
+  PRCTF_PWB_output,
+  PRCTF_Supports_output,
+  PRCTF_Barriers_output
+)
+```
+
+#### Moderation by Individualism
+```{r}
+Individualism_PP <- mod_cont_metafor(db_PP, get_escalc, plain_meta, "Individualism")
+Individualism_PP_output <- get_metafor_output(Individualism_PP)
+
+Individualism_Supports <- mod_cont_metafor(db_Supports, get_escalc, plain_meta, "Individualism")
+Individualism_Supports_output <- get_metafor_output(Individualism_Supports)
+
+Individualism_Barriers <- mod_cont_metafor(db_Barriers, get_escalc, plain_meta, "Individualism")
+Individualism_Barriers_output <- get_metafor_output(Individualism_Barriers)
+
+Individualism_CA <- mod_cont_metafor(db_CA, get_escalc, plain_meta, "Individualism")
+Individualism_CA_output <- get_metafor_output(Individualism_CA)
+
+Individualism_PCB <- mod_cont_metafor(db_PCB, get_escalc, plain_meta, "Individualism")
+Individualism_PCB_output <- get_metafor_output(Individualism_PCB)
+
+Individualism_PWB <- mod_cont_metafor(db_PWB, get_escalc, plain_meta, "Individualism")
+Individualism_PWB_output <- get_metafor_output(Individualism_PWB)
+
+Individualism_mod_output <- rbind(
+  Individualism_PP_output,
+  Individualism_CA_output,
+  Individualism_PCB_output,
+  Individualism_PWB_output,
+  Individualism_Supports_output,
+  Individualism_Barriers_output
+)
+```
+
+##### Bubble plot 
+
+```{r}
+#| eval: false 
+create_bubble_plot_individualism(Mod_result = Individualism_Barriers, moderator_range = 1:110, xlim = c(0,110), output_filename = "Individualism_Barriers", yaxis_label = "FWSS-Barriers", xaxis_label = "Sample individualism score")
+
+```
+
+#### Moderation by Year
+```{r}
+Year_PP <- mod_cont_metafor(db_PP, get_escalc, plain_meta, "Year")
+Year_PP_output <- get_metafor_output(Year_PP)
+
+Year_Supports <- mod_cont_metafor(db_Supports, get_escalc, plain_meta, "Year")
+Year_Supports_output <- get_metafor_output(Year_Supports)
+
+Year_Barriers <- mod_cont_metafor(db_Barriers, get_escalc, plain_meta, "Year")
+Year_Barriers_output <- get_metafor_output(Year_Barriers)
+
+Year_CA <- mod_cont_metafor(db_CA, get_escalc, plain_meta, "Year")
+Year_CA_output <- get_metafor_output(Year_CA)
+
+Year_PCB <- mod_cont_metafor(db_PCB, get_escalc, plain_meta, "Year")
+Year_PCB_output <- get_metafor_output(Year_PCB)
+
+Year_PWB <- mod_cont_metafor(db_PWB, get_escalc, plain_meta, "Year")
+Year_PWB_output <- get_metafor_output(Year_PWB)
+
+Year_mod_output <- rbind(
+  Year_PP_output,
+  Year_CA_output,
+  Year_PCB_output,
+  Year_PWB_output,
+  Year_Supports_output,
+  Year_Barriers_output
+)
+```
+
+#### Make table for continuous moderators
+
+```{r}
+# Age
+Age_mod_output <- as.data.frame(Age_mod_output)
+colnames(Age_mod_output) <- c("k", "B", "SE", "p", "CI_lower", "CI_upper")
+Tenure_mod_output <- as.data.frame(Tenure_mod_output)
+colnames(Tenure_mod_output) <- c("k", "B", "SE", "p", "CI_lower", "CI_upper")
+PRCT_Fem_mod_output <- as.data.frame(PRCT_Fem_mod_output)
+colnames(PRCT_Fem_mod_output) <- c("k", "B", "SE", "p", "CI_lower", "CI_upper")
+Individualism_mod_output <- as.data.frame(Individualism_mod_output)
+colnames(Individualism_mod_output) <- c("k", "B", "SE", "p", "CI_lower", "CI_upper")
+Year_mod_output <- as.data.frame(Year_mod_output)
+colnames(Year_mod_output) <- c("k", "B", "SE", "p", "CI_lower", "CI_upper")
+
+cont_mods_table <- rbind(Age_mod_output, Tenure_mod_output, 
+                         PRCT_Fem_mod_output, Individualism_mod_output, Year_mod_output)
+
+cont_mods_table <- cont_mods_table %>% mutate(B = round(B, 3),
+                                                  SE = round(SE, 3),
+                                                  p = round(p, 3),
+                                                  CI_lower = round(CI_lower, 3),
+                                                  CI_upper = round(CI_upper, 3))
+
+cols_comma <- c("k")
+cols_three_digits <- c("CI_lower", "CI_upper", "p", "B", "SE")
+
+cont_mods_table <- cont_mods_table %>% 
+  mutate(across(all_of(cols_comma), format_column, digits = 0, add_comma = TRUE, trim_leading_zero = FALSE)) %>%
+  mutate(across(all_of(cols_three_digits), format_column, digits = 3))
+
+# Create combined columns
+cont_mods_table <- cont_mods_table %>%
+  mutate(
+    CI95 = paste(CI_lower, CI_upper, sep = ",")
+  ) %>% select(k, B, SE, p, CI95)
+
+cont_mods_table <- tibble::rownames_to_column(cont_mods_table, "Criterion")
+
+flex_tbl <- flextable(cont_mods_table)
+
+# Export to Word
+doc <- read_docx() %>%
+  body_add_flextable(value = flex_tbl)
+
+# Save the Word document
+print(doc, target = "tables/Moderation_continuous.docx")
+
+```
+
+### Categorical moderators
+
+#### Sample_type
+
+```{r}
+databases_nodemos <- Filter(function(df) {
+  !any(grepl("Age|Gender|Education|Tenure", df$Criterion))
+}, databases)
+
+moderators <- c("Career_stage")
+# Create a new list of data frames with enough moderator entries
+dbs <- Filter(function(df) check_conditions(df, moderators), databases_nodemos)
+
+processed_list <- lapply(dbs, function(df) process_mod_results(moderators, df))
+summaries_mod_result_careerstage <- do.call(rbind, lapply(processed_list, function(x) x$sum)) %>% 
+  filter(moderators != "NA")
+walds_mod_result_careerstage <- do.call(rbind, lapply(processed_list, function(x) x$wald[[1]])) %>% 
+  filter(level_1 != "NA") %>%
+  filter(level_2 != "NA")
+
+```
+
+#### Industry 
+
+```{r}
+moderators <- c("Industry")
+# Create a new list of data frames with enough moderator entries
+dbs <- Filter(function(df) check_conditions(df, moderators), databases_nodemos)
+
+processed_list <- lapply(dbs, function(df) process_mod_results(moderators, df))
+summaries_mod_result_workfield <- do.call(rbind, lapply(processed_list, function(x) x$sum)) %>% 
+  filter(Industry != "NA")
+walds_mod_result_workfield <- do.call(rbind, lapply(processed_list, function(x) x$wald[[1]])) %>% 
+  filter(level_1 != "NA") %>%
+  filter(level_2 != "NA")
+
+```
+
+#### Pub_status 
+
+```{r}
+moderators <- c("Pub_status_binary")
+# Create a new list of data frames with enough moderator entries
+dbs <- Filter(function(df) check_conditions(df, moderators), databases_nodemos)
+
+processed_list <- lapply(dbs, function(df) process_mod_results(moderators, df))
+summaries_mod_result_pubstatus <- do.call(rbind, lapply(processed_list, function(x) x$sum)) %>% 
+  filter(moderators != "NA")
+walds_mod_result_pubstatus <- do.call(rbind, lapply(processed_list, function(x) x$wald[[1]])) %>% 
+  filter(level_1 != "NA") %>%
+  filter(level_2 != "NA")
+```
+
+#### Scale_version 
+
+```{r}
+moderators <- c("Scale_version")
+# Create a new list of data frames with enough moderator entries
+dbs <- Filter(function(df) check_conditions(df, moderators), databases_nodemos)
+
+processed_list <- lapply(dbs, function(df) process_mod_results(moderators, df))
+summaries_mod_result_scale <- do.call(rbind, lapply(processed_list, function(x) x$sum)) %>% 
+  filter(moderators != "NA")
+walds_mod_result_scale <- do.call(rbind, lapply(processed_list, function(x) x$wald[[1]])) %>% 
+  filter(level_1 != "NA") %>%
+  filter(level_2 != "NA")
+```
+
+#### Preparing data for flextable
+```{r}
+# Create and rename columns: 
+summaries_mod_result_careerstage <- summaries_mod_result_careerstage %>% mutate(Moderator = "Sample type") %>% rename("Moderator level" = Career_stage)
+summaries_mod_result_workfield <- summaries_mod_result_workfield %>% mutate(Moderator = "Industry") %>% rename("Moderator level" = Industry)
+summaries_mod_result_pubstatus <- summaries_mod_result_pubstatus %>% mutate(Moderator = "Publication status") %>% rename("Moderator level" = Pub_status_binary)
+summaries_mod_result_scale <- summaries_mod_result_scale %>% mutate(Moderator = "FWSS scale") %>% rename("Moderator level" = Scale_version)
+
+# Summaries
+sum_table_catmods <- rbind(summaries_mod_result_careerstage, summaries_mod_result_workfield, summaries_mod_result_pubstatus, summaries_mod_result_scale)
+
+sum_table_catmods$`Moderator level` <- as.character(sum_table_catmods$`Moderator level`)
+sum_table_catmods <- sum_table_catmods %>%
+  mutate(across('Moderator level', ~ str_replace(., 'Chinese translation by Guan et al\\. \\(2014\\)', 'Guan (2014)'))) %>%
+  mutate(across('Moderator level', ~ str_replace(., 'Original scale by Strauss et al\\. \\(2012\\)', 'Strauss (2012)'))) %>% 
+  filter(`Moderator level` != "NA")
+
+# Walds
+wald_table_catmods <- rbind(walds_mod_result_careerstage, walds_mod_result_workfield, walds_mod_result_pubstatus, walds_mod_result_scale)
+
+```
+
+#### Make table for categorical moderators (all moderators)
+```{r}
+library(dplyr)
+library(flextable)
+library(tibble)
+
+sum_table_catmods$CI_LL_95[sum_table_catmods$CI_LL_95 < -1] <- -1.00
+sum_table_catmods$CR_LL_80[sum_table_catmods$CR_LL_80 < -1] <- -1.00
+sum_table_catmods$CI_UL_95[sum_table_catmods$CI_UL_95 > 1] <- 1.00
+sum_table_catmods$CR_UL_80[sum_table_catmods$CR_UL_80 > 1] <- 1.00
+
+# Format columns
+cols_comma <- c("N", "k")
+cols_three_digits <- c("CI_LL_95", "CI_UL_95", "CR_LL_80", "CR_UL_80", "mean_r", "mean_rho", "sd_r_c")
+
+sum_table_catmods <- sum_table_catmods %>% 
+  mutate(across(all_of(cols_comma), format_column, digits = 0, add_comma = TRUE, trim_leading_zero = FALSE)) %>%
+  mutate(across(all_of(cols_three_digits), format_column, digits = 3))
+
+create_flextable2(sum_table_catmods, "tables/Sum_Cat_Mod.docx")
+
+
+# Format columns
+cols_three_digits <- c("mean_1", "mean_2", "diff", "CI_LL_95", "CI_UL_95")
+
+wald_table_catmods <- wald_table_catmods %>% 
+  mutate(across(all_of(cols_three_digits), format_column, digits = 3))
+
+create_flextable_wald(wald_table_catmods, "tables/Walds_Cat_Mod.docx")
+```
+
+# Sensitivity analyses
+
+```{r}
+# CA
+ma_r_CA <- barebones_sens(db_CA, "ma_r_CA")
+sens_output_CA <- sens_output(ma_r_CA)
+sens_cumtab_CA <- sens_output_CA[1]
+plot_with_caption <- sens_output_CA[[2]]$mean_plot + 
+  labs(title = "Career Adaptability",  
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/6_cumulative_plot_CA.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+print(plot_with_caption)
+dev.off()
+
+ma_r_Age <- barebones_sens(db_Age, "ma_r_age")
+sens_output_Age <- sens_output(ma_r_Age)
+sens_cumtab_Age <- sens_output_Age[1]
+
+plot_with_caption <- sens_output_Age[[2]]$mean_plot + 
+  labs(title = "Age",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/18_cumulative_plot_Age.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+
+ma_r_PP <- barebones_sens(db_PP, "ma_r_PP")
+sens_output_PP <- sens_output(ma_r_PP)
+sens_cumtab_PP <- sens_output_PP[1]
+
+plot_with_caption <- sens_output_PP[[2]]$mean_plot + 
+  labs(title = "Proactive personality",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/2_cumulative_plot_PP.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_SelfEsteem <- barebones_sens(db_SelfEsteem, "ma_r_SelfEsteem")
+sens_output_SelfEsteem <- sens_output(ma_r_SelfEsteem)
+sens_cumtab_SelfEsteem <- sens_output_SelfEsteem[1]
+
+plot_with_caption <- sens_output_SelfEsteem[[2]]$mean_plot + 
+  labs(title = "Self-esteem",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/1_cumulative_plot_SelfEsteem.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_PsyCap <- barebones_sens(db_PsyCap, "ma_r_PsyCap")
+sens_output_PsyCap <- sens_output(ma_r_PsyCap)
+sens_cumtab_PsyCap <- sens_output_PsyCap[1]
+
+plot_with_caption <- sens_output_PsyCap[[2]]$mean_plot + 
+  labs(title = "Psychological capital (PsyCap)",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/3_cumulative_plot_PsyCap.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_PCB <- barebones_sens(db_PCB, "ma_r_PCB")
+sens_output_PCB <- sens_output(ma_r_PCB)
+sens_cumtab_PCB <- sens_output_PCB[1]
+
+plot_with_caption <- sens_output_PCB[[2]]$mean_plot + 
+  labs(title = "Proactive career behavior",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/7_cumulative_plot_PCB.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_PWB <- barebones_sens(db_PWB, "ma_r_PWB")
+sens_output_PWB <- sens_output(ma_r_PWB)
+sens_cumtab_PWB <- sens_output_PWB[1]
+
+plot_with_caption <- sens_output_PWB[[2]]$mean_plot + 
+  labs(title = "Proactive work behavior",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/8_cumulative_plot_PWB.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_CDSE <- barebones_sens(db_CDSE, "ma_r_CDSE")
+sens_output_CDSE <- sens_output(ma_r_CDSE)
+sens_cumtab_CDSE <- sens_output_CDSE[1]
+
+plot_with_caption <- sens_output_CDSE[[2]]$mean_plot + 
+  labs(title = "Career decision-making self-efficacy",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/9_cumulative_plot_CDSE.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_WorkE <- barebones_sens(db_WorkE, "ma_r_WorkE")
+sens_output_WorkE <- sens_output(ma_r_WorkE)
+sens_cumtab_WorkE <- sens_output_WorkE[1]
+
+plot_with_caption <- sens_output_WorkE[[2]]$mean_plot + 
+  labs(title = "Work engagement",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/16_cumulative_plot_WorkE.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_OccupationalSE <- barebones_sens(db_OccupationalSE, "ma_r_OccupationalSE")
+sens_output_OccupationalSE <- sens_output(ma_r_OccupationalSE)
+sens_cumtab_OccupationalSE <- sens_output_OccupationalSE[1]
+
+plot_with_caption <- sens_output_OccupationalSE[[2]]$mean_plot + 
+  labs(title = "Occupational self-efficacy",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/10_cumulative_plot_OccupationalSE.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_Wellbeing <- barebones_sens(db_Wellbeing, "ma_r_Wellbeing")
+sens_output_Wellbeing <- sens_output(ma_r_Wellbeing)
+sens_cumtab_Wellbeing <- sens_output_Wellbeing[1]
+
+plot_with_caption <- sens_output_Wellbeing[[2]]$mean_plot + 
+  labs(title = "Life satisfaction and well-being",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/14_cumulative_plot_Wellbeing.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_OCCWellbeing <- barebones_sens(db_OCCWellbeing, "ma_r_OCCWellbeing")
+sens_output_OCCWellbeing <- sens_output(ma_r_OCCWellbeing)
+sens_cumtab_OCCWellbeing <- sens_output_OCCWellbeing[1]
+
+plot_with_caption <- sens_output_OCCWellbeing[[2]]$mean_plot + 
+  labs(title = "Occupational well-being",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/13_cumulative_plot_OCCWellbeing.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_Meaning <- barebones_sens(db_Meaning, "ma_r_Meaning")
+sens_output_Meaning <- sens_output(ma_r_Meaning)
+sens_cumtab_Meaning <- sens_output_Meaning[1]
+
+plot_with_caption <- sens_output_Meaning[[2]]$mean_plot + 
+  labs(title = "Meaning in life",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/15_cumulative_plot_Meaning.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_Employability <- barebones_sens(db_Employability, "ma_r_Employability")
+sens_output_Employability <- sens_output(ma_r_Employability)
+sens_cumtab_Employability <- sens_output_Employability[1]
+
+plot_with_caption <- sens_output_Employability[[2]]$mean_plot + 
+  labs(title = "Employability",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/11_cumulative_plot_Employability.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_Performance <- barebones_sens(db_Performance, "ma_r_Performance")
+sens_output_Performance <- sens_output(ma_r_Performance)
+sens_cumtab_Performance <- sens_output_Performance[1]
+
+plot_with_caption <- sens_output_Performance[[2]]$mean_plot + 
+  labs(title = "Performance",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/12_cumulative_plot_Performance.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_TurnoverI <- barebones_sens(db_TurnoverI, "ma_r_TurnoverI")
+sens_output_TurnoverI <- sens_output(ma_r_TurnoverI)
+sens_cumtab_TurnoverI <- sens_output_TurnoverI[1]
+
+plot_with_caption <- sens_output_TurnoverI[[2]]$mean_plot + 
+  labs(title = "Turnover intention",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/17_cumulative_plot_TurnoverI.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_Supports <- barebones_sens(db_Supports, "ma_r_Supports")
+sens_output_Supports <- sens_output(ma_r_Supports)
+sens_cumtab_Supports <- sens_output_Supports[1]
+
+plot_with_caption <- sens_output_Supports[[2]]$mean_plot + 
+  labs(title = "Supports",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/22_cumulative_plot_Supports.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_Barriers <- barebones_sens(db_Barriers, "ma_r_Barriers")
+sens_output_Barriers <- sens_output(ma_r_Barriers)
+sens_cumtab_Barriers <- sens_output_Barriers[1]
+
+plot_with_caption <- sens_output_Barriers[[2]]$mean_plot + 
+  labs(title = "Barriers",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/23_cumulative_plot_Barriers.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+
+ma_r_Gender <- barebones_sens(db_Gender, "ma_r_Gender")
+sens_output_Gender <- sens_output(ma_r_Gender)
+sens_cumtab_Gender <- sens_output_Gender[1]
+
+plot_with_caption <- sens_output_Gender[[2]]$mean_plot + 
+  labs(title = "Gender",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/19_cumulative_plot_Gender.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_Education <- barebones_sens(db_Edu, "ma_r_Education")
+sens_output_Education <- sens_output(ma_r_Education)
+sens_cumtab_Education <- sens_output_Education[1]
+
+plot_with_caption <- sens_output_Education[[2]]$mean_plot + 
+  labs(title = "Education",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/20_cumulative_plot_Education.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+ma_r_Tenure <- barebones_sens(db_Tenure, "ma_r_Tenure")
+sens_output_Tenure <- sens_output(ma_r_Tenure)
+sens_cumtab_Tenure <- sens_output_Tenure[1]
+
+plot_with_caption <- sens_output_Tenure[[2]]$mean_plot + 
+  labs(title = "Tenure",
+       y = expression(italic(r)[italic(c)]), x = "Sample number")
+
+pdf(file = "plots/21_cumulative_plot_Tenure.pdf",
+    # The directory you want to save the file in
+    width = 4,
+    # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+plot_with_caption
+dev.off()
+
+```
+
+## Make table for sensitivity analysis results
+
+```{r}
+# Sensitivity Analysis
+cum_outtab <- rbind(
+  sens_cumtab_PP[[1]][[1]],
+  sens_cumtab_Supports[[1]][[1]]) %>% as.data.frame(.)
+
+cum_outtab$CI_LL_95[cum_outtab$CI_LL_95 < -1] <- -1.00
+cum_outtab$CR_LL_80[cum_outtab$CR_LL_80 < -1] <- -1.00
+cum_outtab$CI_UL_95[cum_outtab$CI_UL_95 > 1] <- 1.00
+cum_outtab$CR_UL_80[cum_outtab$CR_UL_80 > 1] <- 1.00
+
+# Format numeric columns
+cols_comma <- c("N", "k")
+cols_three_digits <- c("CI_LL_95", "CI_UL_95", "CR_LL_80", "CR_UL_80", "mean_r", "mean_rho", "sd_r_c")
+
+cum_outtab <- cum_outtab %>% 
+  mutate(across(all_of(cols_comma), format_column, digits = 0, add_comma = TRUE, trim_leading_zero = FALSE)) %>%
+  mutate(across(all_of(cols_three_digits), format_column, digits = 3))
+
+# Create combined columns
+cum_outtab <- cum_outtab %>%
+  mutate(
+    CI95 = paste(CI_LL_95, CI_UL_95, sep = ", "),
+    CR80 = paste(CR_LL_80, CR_UL_80, sep = ", ")
+  )
+
+colnames(cum_outtab)
+cum_outtab <- cum_outtab %>% select(study_added, k, N, mean_r, mean_rho, sd_r_c, CI95, CR80) %>% as.data.frame(.)
+
+sequence_names <- c(
+  "Proactive Personality",
+  "Supports"
+)
+cum_outtab$`Predictor variable` <- NA
+
+# Get the starting points of each sequence
+sequence_starts <- which(cum_outtab$k == 1)
+# Loop over the sequence starts and assign names
+for (i in seq_along(sequence_starts)) {
+  start_index <- sequence_starts[i]
+  # For the last sequence, go till the end of the dataframe
+  if (i == length(sequence_starts)) {
+    end_index <- nrow(cum_outtab)
+  } else {
+    end_index <- sequence_starts[i + 1] - 1
+  }
+  # Assign the name to the corresponding rows
+  cum_outtab$`Predictor variable`[start_index:end_index] <- sequence_names[(i - 1) %% length(sequence_names) + 1]
+}
+
+cum_outtab <- cum_outtab[, c("Predictor variable", setdiff(names(cum_outtab), "Predictor variable"))]
+
+library(xtable)
+colnames(cum_outtab) <- c(
+  "Predictor variable",
+  "Sample number added",
+  "k",
+  "N",
+  "r",
+  "r_c",
+  "SD_c",
+  "95% CI",
+  "80% CR"
+)
+
+flex_tbl <- flextable(cum_outtab)
+
+# Export to Word
+doc <- read_docx() %>%
+  body_add_flextable(value = flex_tbl)
+
+# Save the Word document
+print(doc, target = "tables/Cumulative_MA.docx")
+
+```
+
+
+
